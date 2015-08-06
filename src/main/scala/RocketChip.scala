@@ -26,8 +26,6 @@ case object UseBackupMemoryPort extends Field[Boolean]
 case object BuildL2CoherenceManager extends Field[() => CoherenceAgent]
 /** Function for building some kind of tile connected to a reset signal */
 case object BuildTiles extends Field[Seq[(Bool) => Tile]]
-/** Which protocol to use to talk to memory/devices */
-case object UseNASTI extends Field[Boolean]
 
 /** Utility trait for quick access to some relevant parameters */
 trait TopLevelParameters extends UsesParameters {
@@ -61,7 +59,7 @@ class TopIO extends BasicTopIO {
 }
 
 class MultiChannelTopIO extends BasicTopIO with TopLevelParameters {
-  val mem = Vec.fill(nMemChannels){ new MemIO }
+  val mem = Vec.fill(nMemChannels){ new NASTIMasterIO }
 }
 
 /** Top-level module for the chip */
@@ -70,9 +68,11 @@ class Top extends Module with TopLevelParameters {
   val io = new TopIO
   if(!params(UseZscale)) {
     val temp = Module(new MultiChannelTop)
-    val arb = Module(new MemIOArbiter(nMemChannels))
-    arb.io.inner <> temp.io.mem
-    io.mem <> arb.io.outer
+    val arb = Module(new NASTIArbiter(nMemChannels))
+    val conv = Module(new MemIONASTISlaveIOConverter(params(CacheBlockOffsetBits)))
+    arb.io.master <> temp.io.mem
+    conv.io.nasti <> arb.io.slave
+    io.mem <> conv.io.mem
     io.mem_backup_ctrl <> temp.io.mem_backup_ctrl
     io.host <> temp.io.host
   } else {
@@ -116,7 +116,7 @@ class MultiChannelTop extends Module with TopLevelParameters {
 class Uncore extends Module with TopLevelParameters {
   val io = new Bundle {
     val host = new HostIO
-    val mem = Vec.fill(nMemChannels){ new MemIO }
+    val mem = Vec.fill(nMemChannels){ new NASTIMasterIO }
     val tiles_cached = Vec.fill(nTiles){new ClientTileLinkIO}.flip
     val tiles_uncached = Vec.fill(nTiles){new ClientUncachedTileLinkIO}.flip
     val htif = Vec.fill(nTiles){new HTIFIO}.flip
@@ -152,7 +152,7 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     val tiles_uncached = Vec.fill(nTiles){new ClientUncachedTileLinkIO}.flip
     val htif_uncached = (new ClientUncachedTileLinkIO).flip
     val incoherent = Vec.fill(nTiles){Bool()}.asInput
-    val mem = Vec.fill(nMemChannels){ new MemIO }
+    val mem = Vec.fill(nMemChannels){ new NASTIMasterIO }
     val mem_backup = new MemSerializedIO(htifW)
     val mem_backup_en = Bool(INPUT)
   }
@@ -184,29 +184,20 @@ class OuterMemorySystem extends Module with TopLevelParameters {
   val outerTLParams = params.alterPartial({ case TLId => "L2ToMC" })
   val backendBuffering = TileLinkDepths(0,0,0,0,0)
   val mem_channels = managerEndpoints.map { banks =>
-    if(!params(UseNASTI)) {
-      val arb = Module(new RocketChipTileLinkArbiter(managerDepths = backendBuffering))(outerTLParams)
-      val conv = Module(new MemPipeIOTileLinkIOConverter(nMemReqs))(outerTLParams)
-      arb.io.clients <> banks.map(_.outerTL)
-      arb.io.managers.head <> conv.io.tl
-      MemIOMemPipeIOConverter(conv.io.mem)
-    } else {
-      val arb = Module(new RocketChipTileLinkArbiter(managerDepths = backendBuffering))(outerTLParams)
-      val conv1 = Module(new NASTIMasterIOTileLinkIOConverter)(outerTLParams)
-      val conv2 = Module(new MemIONASTISlaveIOConverter(params(CacheBlockOffsetBits)))
-      val conv3 = Module(new MemPipeIOMemIOConverter(nMemReqs))
-      arb.io.clients <> banks.map(_.outerTL)
-      arb.io.managers.head <> conv1.io.tl
-      conv2.io.nasti <> conv1.io.nasti
-      conv3.io.cpu.req_cmd <> Queue(conv2.io.mem.req_cmd, 2)
-      conv3.io.cpu.req_data <> Queue(conv2.io.mem.req_data, mifDataBeats)
-      conv2.io.mem.resp <> conv3.io.cpu.resp
-      MemIOMemPipeIOConverter(conv3.io.mem)
+    val masters = banks.map { bank =>
+      val conv = Module(new NASTIMasterIOTileLinkIOConverter)(outerTLParams)
+      conv.io.tl <> bank.outerTL
+      conv.io.nasti
     }
+    val arb = Module(new NASTIArbiter(nBanksPerMemChannel))
+    arb.io.master <> masters
+    arb.io.slave
   }
 
   // Create a SerDes for backup memory port
   if(params(UseBackupMemoryPort)) {
-    VLSIUtils.doOuterMemorySystemSerdes(mem_channels, io.mem, io.mem_backup, io.mem_backup_en, nMemChannels, params(HTIFWidth))
+    VLSIUtils.doOuterMemorySystemSerdes(
+      mem_channels, io.mem, io.mem_backup, io.mem_backup_en,
+      nMemChannels, params(HTIFWidth), params(CacheBlockOffsetBits))
   } else { io.mem <> mem_channels }
 }

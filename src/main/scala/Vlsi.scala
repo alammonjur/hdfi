@@ -15,34 +15,50 @@ class MemDessert extends Module {
 
 object VLSIUtils {
   def doOuterMemorySystemSerdes(
-      llcs: Seq[MemIO],
-      mems: Seq[MemIO],
+      llcs: Seq[NASTIMasterIO],
+      mems: Seq[NASTIMasterIO],
       backup: MemSerializedIO,
       en: Bool,
       nMemChannels: Int,
-      htifWidth: Int) {
-    val arb = Module(new MemIOArbiter(nMemChannels))
+      htifWidth: Int,
+      blockOffsetBits: Int) {
+
+    val arb = Module(new NASTIArbiter(nMemChannels))
+    val conv = Module(new MemIONASTISlaveIOConverter(blockOffsetBits))
     val mem_serdes = Module(new MemSerdes(htifWidth))
-    mem_serdes.io.wide <> arb.io.outer
+
+    conv.io.nasti <> arb.io.slave
+    mem_serdes.io.wide <> conv.io.mem
     backup <> mem_serdes.io.narrow
 
-    llcs zip mems zip arb.io.inner foreach { case ((llc, mem), wide) =>
-      llc.req_cmd.ready := Mux(en, wide.req_cmd.ready, mem.req_cmd.ready)
-      mem.req_cmd.valid := llc.req_cmd.valid && !en
-      mem.req_cmd.bits := llc.req_cmd.bits
-      wide.req_cmd.valid := llc.req_cmd.valid && en
-      wide.req_cmd.bits := llc.req_cmd.bits
+    llcs zip mems zip arb.io.master foreach { case ((llc, mem), wide) =>
+      llc.ar.ready := Mux(en, wide.ar.ready, mem.ar.ready)
+      mem.ar.valid := llc.ar.valid && !en
+      mem.ar.bits := llc.ar.bits
+      wide.ar.valid := llc.ar.valid && en
+      wide.ar.bits := llc.ar.bits
 
-      llc.req_data.ready := Mux(en, wide.req_data.ready, mem.req_data.ready)
-      mem.req_data.valid := llc.req_data.valid && !en
-      mem.req_data.bits := llc.req_data.bits
-      wide.req_data.valid := llc.req_data.valid && en
-      wide.req_data.bits := llc.req_data.bits
+      llc.aw.ready := Mux(en, wide.aw.ready, mem.aw.ready)
+      mem.aw.valid := llc.aw.valid && !en
+      mem.aw.bits := llc.aw.bits
+      wide.aw.valid := llc.aw.valid && en
+      wide.aw.bits := llc.aw.bits
 
-      llc.resp.valid := Mux(en, wide.resp.valid, mem.resp.valid)
-      llc.resp.bits := Mux(en, wide.resp.bits, mem.resp.bits)
-      mem.resp.ready  := llc.resp.ready && !en
-      wide.resp.ready := llc.resp.ready && en
+      llc.w.ready := Mux(en, wide.w.ready, mem.w.ready)
+      mem.w.valid := llc.w.valid && !en
+      mem.w.bits := llc.w.bits
+      wide.w.valid := llc.w.valid && en
+      wide.w.bits := llc.w.bits
+
+      llc.b.valid := Mux(en, wide.b.valid, mem.b.valid)
+      llc.b.bits := Mux(en, wide.b.bits, mem.b.bits)
+      mem.b.ready  := llc.b.ready && !en
+      wide.b.ready := llc.b.ready && en
+
+      llc.r.valid := Mux(en, wide.r.valid, mem.r.valid)
+      llc.r.bits := Mux(en, wide.r.bits, mem.r.bits)
+      mem.r.ready  := llc.r.ready && !en
+      wide.r.ready := llc.r.ready && en
     }
   }
 

@@ -43,7 +43,6 @@ class DefaultConfig extends ChiselConfig (
       case NASTIDataBits => site(MIFDataBits)
       case NASTIAddrBits => site(MIFAddrBits)
       case NASTIIdBits => site(MIFTagBits)
-      case UseNASTI => false
       //Params used by all caches
       case NSets => findBy(CacheName)
       case NWays => findBy(CacheName)
