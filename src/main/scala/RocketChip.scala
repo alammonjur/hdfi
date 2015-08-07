@@ -170,28 +170,35 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     else new RocketChipTileLinkCrossbar(addrToBank, sharerToClientId, preBuffering, postBuffering))
 
   // Create point(s) of coherence serialization
-  val managerEndpoints = List.fill(nMemChannels) {
-                           List.fill(nBanksPerMemChannel) {
-                             params(BuildL2CoherenceManager)()}}
-  managerEndpoints.flatten.foreach { _.incoherent := io.incoherent }
+  val nManagers = nMemChannels * nBanksPerMemChannel
+  val managerEndpoints = List.fill(nManagers) { params(BuildL2CoherenceManager)()}
+  managerEndpoints.foreach { _.incoherent := io.incoherent }
 
   // Wire the tiles and htif to the TileLink client ports of the L1toL2 network,
   // and coherence manager(s) to the other side
   l1tol2net.io.clients <> ordered_clients
-  l1tol2net.io.managers <> managerEndpoints.flatMap(_.map(_.innerTL))
+  l1tol2net.io.managers <> managerEndpoints.map(_.innerTL)
 
   // Create a converter between TileLinkIO and MemIO for each channel
   val outerTLParams = params.alterPartial({ case TLId => "L2ToMC" })
   val backendBuffering = TileLinkDepths(0,0,0,0,0)
-  val mem_channels = managerEndpoints.map { banks =>
-    val masters = banks.map { bank =>
-      val conv = Module(new NASTIMasterIOTileLinkIOConverter)(outerTLParams)
-      conv.io.tl <> bank.outerTL
-      conv.io.nasti
-    }
-    val arb = Module(new NASTIArbiter(nBanksPerMemChannel))
-    arb.io.master <> masters
-    arb.io.slave
+
+  val interconnect = params(BuildNASTI)()
+
+  for ((bank, i) <- managerEndpoints.zipWithIndex) {
+    val conv = Module(new NASTIMasterIOTileLinkIOConverter)(outerTLParams)
+    conv.io.tl <> bank.outerTL
+    interconnect.io.masters(i) <> conv.io.nasti
+  }
+
+  val mem_channels = interconnect.io.slaves.take(nMemChannels)
+
+  for (s <- interconnect.io.slaves.drop(nMemChannels)) {
+    s.ar.ready := Bool(false)
+    s.aw.ready := Bool(false)
+    s.w.ready  := Bool(false)
+    s.b.valid  := Bool(false)
+    s.r.valid  := Bool(false)
   }
 
   // Create a SerDes for backup memory port

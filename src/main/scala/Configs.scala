@@ -41,7 +41,7 @@ class DefaultConfig extends ChiselConfig (
       case MIFAddrBits => Dump("MEM_ADDR_BITS", site(PAddrBits) - site(CacheBlockOffsetBits))
       case MIFDataBeats => site(TLDataBits)*site(TLDataBeats)/site(MIFDataBits)
       case NASTIDataBits => site(MIFDataBits)
-      case NASTIAddrBits => site(MIFAddrBits)
+      case NASTIAddrBits => site(PAddrBits)
       case NASTIIdBits => site(MIFTagBits)
       //Params used by all caches
       case NSets => findBy(CacheName)
@@ -71,6 +71,7 @@ class DefaultConfig extends ChiselConfig (
       case StoreDataQueueDepth => 17
       case ReplayQueueDepth => 16
       case NMSHRs => Knob("L1D_MSHRS")
+      case NIOMSHRs => Knob("L1D_IOMSHRS")
       case LRSCCycles => 32 
       //L2 Memory System Params
       case NAcquireTransactors => 7
@@ -154,11 +155,21 @@ class DefaultConfig extends ChiselConfig (
       case CacheBlockBytes => 64
       case CacheBlockOffsetBits => log2Up(here(CacheBlockBytes))
       case UseBackupMemoryPort => true
+      case MMIOBase => 512 * 1024 * 1024 // 512 MB
+      case NASTINMasters => site(TLNManagers)
+      case NASTINSlaves => site(NMemoryChannels) + site(NTiles) + 1
+      case NASTIAddrMap => Seq(
+        ("mem", Some(0), MemSize(site(MMIOBase))),
+        ("io", None, Submap(
+          ("csr", None, MemSize(1 << 12)), // 12-bit CSR space
+          ("dummy", None, MemSize(64)))))
+      case BuildNASTI => () => Module(new NASTITopInterconnect)
   }},
   knobValues = {
     case "NTILES" => 1
     case "NBANKS" => 1
     case "L1D_MSHRS" => 2
+    case "L1D_IOMSHRS" => 1
     case "L1D_SETS" => 64
     case "L1D_WAYS" => 4
     case "L1I_SETS" => 64
