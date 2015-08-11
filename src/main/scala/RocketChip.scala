@@ -27,6 +27,9 @@ case object BuildL2CoherenceManager extends Field[() => CoherenceAgent]
 /** Function for building some kind of tile connected to a reset signal */
 case object BuildTiles extends Field[Seq[(Bool) => Tile]]
 
+case object BuildSMI extends Field[String => SMIPeripheral]
+case object SMIPeripherals extends Field[Seq[String]]
+
 /** Utility trait for quick access to some relevant parameters */
 trait TopLevelParameters extends UsesParameters {
   val htifW = params(HTIFWidth)
@@ -183,6 +186,7 @@ class OuterMemorySystem extends Module with TopLevelParameters {
   val outerTLParams = params.alterPartial({ case TLId => "L2ToMC" })
   val backendBuffering = TileLinkDepths(0,0,0,0,0)
 
+  val slaveConnected = Array.fill(params(NASTINSlaves)) { false }
   val interconnect = params(BuildNASTI)()
 
   for ((bank, i) <- managerEndpoints.zipWithIndex) {
@@ -193,7 +197,26 @@ class OuterMemorySystem extends Module with TopLevelParameters {
 
   val mem_channels = interconnect.io.slaves.take(nMemChannels)
 
-  for (s <- interconnect.io.slaves.drop(nMemChannels)) {
+  for (i <- 0 until nMemChannels) { slaveConnected(i) = true }
+
+  val smiBuilder = params(BuildSMI)
+  val portMap = new PortMap(params(NASTIAddrMap))
+
+  for (name <- params(SMIPeripherals)) {
+    val smi = smiBuilder(name)
+    val portNum = portMap(name)
+    val conv = Module(new SMIIONASTISlaveIOConverter(
+      smi.dataWidth, smi.addrWidth))
+    conv.io.nasti <> interconnect.io.slaves(portNum)
+    smi.io <> conv.io.smi
+    slaveConnected(portNum) = true
+  }
+
+  val unconnected = interconnect.io.slaves.zip(slaveConnected)
+    .filterNot(_._2).map(_._1)
+
+  // tie off all the unconnected slave ports
+  for (s <- unconnected) {
     s.ar.ready := Bool(false)
     s.aw.ready := Bool(false)
     s.w.ready  := Bool(false)

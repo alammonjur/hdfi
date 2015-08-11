@@ -119,6 +119,7 @@ class DefaultConfig extends ChiselConfig (
       case TLNClients => site(TLNCachingClients) + site(TLNCachelessClients)
       case TLDataBits => site(CacheBlockBytes)*8/site(TLDataBeats)
       case TLDataBeats => 4
+      case TLWriteMaskBits => (site(TLDataBits) - 1) / 8 + 1
       case TLNetworkIsOrderedP2P => false
       case TLNManagers => findBy(TLId)
       case TLNCachingClients => findBy(TLId)
@@ -133,7 +134,7 @@ class DefaultConfig extends ChiselConfig (
         case TLNCachelessClients => site(NTiles) + 1
         case TLCoherencePolicy => new MESICoherence(site(L2DirectoryRepresentation)) 
         case TLMaxManagerXacts => site(NAcquireTransactors) + 2
-        case TLMaxClientXacts => max(site(NMSHRs),
+        case TLMaxClientXacts => max(site(NMSHRs) + site(NIOMSHRs),
                                      if(site(BuildRoCC).isEmpty) 1 
                                        else site(RoCCMaxTaggedMemXacts))
         case TLMaxClientsPerPort => if(site(BuildRoCC).isEmpty) 1 else 3
@@ -162,8 +163,12 @@ class DefaultConfig extends ChiselConfig (
         ("mem", Some(0), MemSize(site(MMIOBase))),
         ("io", None, Submap(
           ("csr", None, MemSize(1 << 12)), // 12-bit CSR space
-          ("dummy", None, MemSize(64)))))
+          ("smallmem", None, MemSize(64)))))
       case BuildNASTI => () => Module(new NASTITopInterconnect)
+      case SMIPeripherals => Seq("io:smallmem")
+      case BuildSMI => (name: String) => name match {
+        case "io:smallmem" => Module(new SMIMem(32, 16))
+      }
   }},
   knobValues = {
     case "NTILES" => 1
@@ -186,6 +191,8 @@ class With8Cores extends ChiselConfig(knobValues = { case "NTILES" => 8 })
 class With2Banks extends ChiselConfig(knobValues = { case "NBANKS" => 2 })
 class With4Banks extends ChiselConfig(knobValues = { case "NBANKS" => 4 })
 class With8Banks extends ChiselConfig(knobValues = { case "NBANKS" => 8 })
+
+class MultibankConfig extends ChiselConfig(new With2Banks ++ new DefaultConfig)
 
 class WithL2Cache extends ChiselConfig(
   (pname,site,here) => pname match {
