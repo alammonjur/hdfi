@@ -165,6 +165,7 @@ class DefaultConfig extends ChiselConfig (
           // 15-bit CSR space (2^12 words) * (8 bytes/word)
           ("csr0", None, MemSize(1 << 15)),
           ("smallmem", None, MemSize(64)))))
+      case NASTIAddrHashMap => new AddrHashMap(site(NASTIAddrMap))
       case BuildNASTI => () => Module(new NASTITopInterconnect)
       case SMIPeripherals => Seq("io:smallmem")
       case BuildSMI => (name: String) => name match {

@@ -214,11 +214,16 @@ class OuterMemorySystem extends Module with TopLevelParameters {
 
   for (i <- 0 until nMemChannels) { slaveConnected(i) = true }
 
-  val portMap = new PortMap(params(NASTIAddrMap))
+  val addrMap = params(NASTIAddrHashMap)
+
+  println("Generated Address Map")
+  for ((name, base, size) <- addrMap.sortedEntries) {
+    println(f"\t$name%s $base%x - ${base + size - 1}%x")
+  }
 
   for (i <- 0 until nTiles) {
     val csrName = s"io:csr$i"
-    val csrPort = portMap(csrName)
+    val csrPort = addrMap(csrName).port
     val conv = Module(new SMIIONASTISlaveIOConverter(64, 12))
     conv.io.nasti <> interconnect.io.slaves(csrPort)
     io.pcr(i) <> conv.io.smi
@@ -229,7 +234,7 @@ class OuterMemorySystem extends Module with TopLevelParameters {
 
   for (name <- params(SMIPeripherals)) {
     val smi = smiBuilder(name)
-    val portNum = portMap(name)
+    val portNum = addrMap(name).port
     val conv = Module(new SMIIONASTISlaveIOConverter(
       smi.dataWidth, smi.addrWidth))
     conv.io.nasti <> interconnect.io.slaves(portNum)
