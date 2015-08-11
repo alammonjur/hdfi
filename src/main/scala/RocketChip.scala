@@ -135,7 +135,21 @@ class Uncore extends Module with TopLevelParameters {
 
   // Wire the htif to the memory port(s) and host interface
   io.host.debug_stats_pcr := htif.io.host.debug_stats_pcr
-  htif.io.cpu <> io.htif
+  for (i <- 0 until nTiles) {
+    io.htif(i).reset := htif.io.cpu(i).reset
+    io.htif(i).id := htif.io.cpu(i).id
+    htif.io.cpu(i).ipi_req <> io.htif(i).ipi_req
+    io.htif(i).ipi_rep <> htif.io.cpu(i).ipi_rep
+    htif.io.cpu(i).debug_stats_pcr <> io.htif(i).debug_stats_pcr
+
+    // split pcr_req/pcr_resp between HostIO and MMIO
+    val pcr_arb = Module(new SMIArbiter(2, 64, 12))
+    pcr_arb.io.in(0).req <> htif.io.cpu(i).pcr_req
+    htif.io.cpu(i).pcr_rep <> pcr_arb.io.in(0).resp
+    pcr_arb.io.in(1) <> outmemsys.io.pcr(i)
+    io.htif(i).pcr_req <> pcr_arb.io.out.req
+    pcr_arb.io.out.resp <> io.htif(i).pcr_rep
+  }
   io.mem <> outmemsys.io.mem
   if(params(UseBackupMemoryPort)) {
     outmemsys.io.mem_backup_en := io.mem_backup_ctrl.en
@@ -158,6 +172,7 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     val mem = Vec.fill(nMemChannels){ new NASTIMasterIO }
     val mem_backup = new MemSerializedIO(htifW)
     val mem_backup_en = Bool(INPUT)
+    val pcr = Vec.fill(nTiles) { new SMIIO(64, 12) }
   }
 
   // Create a simple L1toL2 NoC between the tiles+htif and the banks of outer memory
@@ -199,8 +214,18 @@ class OuterMemorySystem extends Module with TopLevelParameters {
 
   for (i <- 0 until nMemChannels) { slaveConnected(i) = true }
 
-  val smiBuilder = params(BuildSMI)
   val portMap = new PortMap(params(NASTIAddrMap))
+
+  for (i <- 0 until nTiles) {
+    val csrName = s"io:csr$i"
+    val csrPort = portMap(csrName)
+    val conv = Module(new SMIIONASTISlaveIOConverter(64, 12))
+    conv.io.nasti <> interconnect.io.slaves(csrPort)
+    io.pcr(i) <> conv.io.smi
+    slaveConnected(csrPort) = true
+  }
+
+  val smiBuilder = params(BuildSMI)
 
   for (name <- params(SMIPeripherals)) {
     val smi = smiBuilder(name)
