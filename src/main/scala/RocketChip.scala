@@ -96,8 +96,8 @@ class MultiChannelTop extends Module with TopLevelParameters {
     case ((hl, tile), i) =>
       tile.io.host.id := UInt(i)
       tile.io.host.reset := Reg(next=Reg(next=hl.reset))
-      tile.io.host.pcr_req <> Queue(hl.pcr_req)
-      hl.pcr_rep <> Queue(tile.io.host.pcr_rep)
+      tile.io.host.pcr.req <> Queue(hl.pcr.req)
+      hl.pcr.resp <> Queue(tile.io.host.pcr.resp)
       hl.ipi_req <> Queue(tile.io.host.ipi_req)
       tile.io.host.ipi_rep <> Queue(hl.ipi_rep)
       hl.debug_stats_pcr := tile.io.host.debug_stats_pcr
@@ -133,6 +133,8 @@ class Uncore extends Module with TopLevelParameters {
   outmemsys.io.tiles_uncached <> io.tiles_uncached
   outmemsys.io.tiles_cached <> io.tiles_cached
 
+  val rtc = Module(new RTC(CSRs.mtime))
+
   // Wire the htif to the memory port(s) and host interface
   io.host.debug_stats_pcr := htif.io.host.debug_stats_pcr
   for (i <- 0 until nTiles) {
@@ -143,12 +145,11 @@ class Uncore extends Module with TopLevelParameters {
     htif.io.cpu(i).debug_stats_pcr <> io.htif(i).debug_stats_pcr
 
     // split pcr_req/pcr_resp between HostIO and MMIO
-    val pcr_arb = Module(new SMIArbiter(2, 64, 12))
-    pcr_arb.io.in(0).req <> htif.io.cpu(i).pcr_req
-    htif.io.cpu(i).pcr_rep <> pcr_arb.io.in(0).resp
+    val pcr_arb = Module(new SMIArbiter(3, 64, 12))
+    pcr_arb.io.in(0) <> htif.io.cpu(i).pcr
     pcr_arb.io.in(1) <> outmemsys.io.pcr(i)
-    io.htif(i).pcr_req <> pcr_arb.io.out.req
-    pcr_arb.io.out.resp <> io.htif(i).pcr_rep
+    pcr_arb.io.in(2) <> rtc.io.smi(i)
+    io.htif(i).pcr <> pcr_arb.io.out
   }
   io.mem <> outmemsys.io.mem
   if(params(UseBackupMemoryPort)) {
