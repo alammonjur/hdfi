@@ -26,6 +26,9 @@ case object UseBackupMemoryPort extends Field[Boolean]
 case object BuildL2CoherenceManager extends Field[() => CoherenceAgent]
 /** Function for building some kind of tile connected to a reset signal */
 case object BuildTiles extends Field[Seq[(Bool) => Tile]]
+/** Connect RTC module to NASTI interconnect instead of PCR port
+ *  This may be beneficial if you have a large number of cores */
+case object UseNASTIRTC extends Field[Bool]
 
 case object BuildSMI extends Field[String => SMIPeripheral]
 case object SMIPeripherals extends Field[Seq[String]]
@@ -133,10 +136,6 @@ class Uncore extends Module with TopLevelParameters {
   outmemsys.io.tiles_uncached <> io.tiles_uncached
   outmemsys.io.tiles_cached <> io.tiles_cached
 
-  val rtc = Module(new RTC(CSRs.mtime))
-
-  // Wire the htif to the memory port(s) and host interface
-  io.host.debug_stats_pcr := htif.io.host.debug_stats_pcr
   for (i <- 0 until nTiles) {
     io.htif(i).reset := htif.io.cpu(i).reset
     io.htif(i).id := htif.io.cpu(i).id
@@ -144,13 +143,14 @@ class Uncore extends Module with TopLevelParameters {
     io.htif(i).ipi_rep <> htif.io.cpu(i).ipi_rep
     htif.io.cpu(i).debug_stats_pcr <> io.htif(i).debug_stats_pcr
 
-    // split pcr_req/pcr_resp between HostIO and MMIO
-    val pcr_arb = Module(new SMIArbiter(3, 64, 12))
+    val pcr_arb = Module(new SMIArbiter(2, 64, 12))
     pcr_arb.io.in(0) <> htif.io.cpu(i).pcr
     pcr_arb.io.in(1) <> outmemsys.io.pcr(i)
-    pcr_arb.io.in(2) <> rtc.io.smi(i)
     io.htif(i).pcr <> pcr_arb.io.out
   }
+
+  // Wire the htif to the memory port(s) and host interface
+  io.host.debug_stats_pcr := htif.io.host.debug_stats_pcr
   io.mem <> outmemsys.io.mem
   if(params(UseBackupMemoryPort)) {
     outmemsys.io.mem_backup_en := io.mem_backup_ctrl.en
@@ -202,7 +202,13 @@ class OuterMemorySystem extends Module with TopLevelParameters {
   val outerTLParams = params.alterPartial({ case TLId => "L2ToMC" })
   val backendBuffering = TileLinkDepths(0,0,0,0,0)
 
-  val slaveConnected = Array.fill(params(NASTINSlaves)) { false }
+  val addrMap = params(NASTIAddrHashMap)
+
+  println("Generated Address Map")
+  for ((name, base, size) <- addrMap.sortedEntries) {
+    println(f"\t$name%s $base%x - ${base + size - 1}%x")
+  }
+
   val interconnect = params(BuildNASTI)()
 
   for ((bank, i) <- managerEndpoints.zipWithIndex) {
@@ -211,24 +217,39 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     interconnect.io.masters(i) <> conv.io.nasti
   }
 
-  val mem_channels = interconnect.io.slaves.take(nMemChannels)
-
-  for (i <- 0 until nMemChannels) { slaveConnected(i) = true }
-
-  val addrMap = params(NASTIAddrHashMap)
-
-  println("Generated Address Map")
-  for ((name, base, size) <- addrMap.sortedEntries) {
-    println(f"\t$name%s $base%x - ${base + size - 1}%x")
+  var masterInd = nManagers
+  val slaveConnected = Array.tabulate(params(NASTINSlaves)) {
+    i => i < nMemChannels
   }
 
-  for (i <- 0 until nTiles) {
-    val csrName = s"io:csr$i"
-    val csrPort = addrMap(csrName).port
-    val conv = Module(new SMIIONASTISlaveIOConverter(64, 12))
-    conv.io.nasti <> interconnect.io.slaves(csrPort)
-    io.pcr(i) <> conv.io.smi
-    slaveConnected(csrPort) = true
+  if (params(UseNASTIRTC)) {
+    val rtc = Module(new RTCNASTI(CSRs.mtime))
+    interconnect.io.masters(masterInd) <> rtc.io
+    masterInd += 1
+
+    for (i <- 0 until nTiles) {
+      val csrName = s"io:csr$i"
+      val csrPort = addrMap(csrName).port
+      val conv = Module(new SMIIONASTISlaveIOConverter(64, 12))
+      conv.io.nasti <> interconnect.io.slaves(csrPort)
+      io.pcr(i) <> conv.io.smi
+      slaveConnected(csrPort) = true
+    }
+  } else {
+    val rtc = Module(new RTC(CSRs.mtime))
+
+    for (i <- 0 until nTiles) {
+      val csrName = s"io:csr$i"
+      val csrPort = addrMap(csrName).port
+      val conv = Module(new SMIIONASTISlaveIOConverter(64, 12))
+      val arb = Module(new SMIArbiter(2, 64, 12))
+
+      conv.io.nasti <> interconnect.io.slaves(csrPort)
+      arb.io.in(0) <> conv.io.smi
+      arb.io.in(1) <> rtc.io.smi(i)
+      io.pcr(i) <> arb.io.out
+      slaveConnected(csrPort) = true
+    }
   }
 
   val smiBuilder = params(BuildSMI)
@@ -254,6 +275,8 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     s.b.valid  := Bool(false)
     s.r.valid  := Bool(false)
   }
+
+  val mem_channels = interconnect.io.slaves.take(nMemChannels)
 
   // Create a SerDes for backup memory port
   if(params(UseBackupMemoryPort)) {
