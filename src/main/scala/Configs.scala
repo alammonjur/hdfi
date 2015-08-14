@@ -157,7 +157,7 @@ class DefaultConfig extends ChiselConfig (
       case CacheBlockOffsetBits => log2Up(here(CacheBlockBytes))
       case UseBackupMemoryPort => true
       case UseNASTIRTC => false
-      case MMIOBase => 512 * 1024 * 1024 // 512 MB
+      case MMIOBase => 1 << 30 // 1 GB
       case NASTINMasters => site(TLNManagers) +
         (if (site(UseNASTIRTC)) 1 else 0)
       case NASTINSlaves => site(NMemoryChannels) + site(NTiles) + 1
