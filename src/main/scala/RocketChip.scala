@@ -78,7 +78,9 @@ class Top extends Module with TopLevelParameters {
     val conv = Module(new MemIONASTISlaveIOConverter(params(CacheBlockOffsetBits)))
     arb.io.master <> temp.io.mem
     conv.io.nasti <> arb.io.slave
-    io.mem <> conv.io.mem
+    io.mem.req_cmd <> Queue(conv.io.mem.req_cmd)
+    io.mem.req_data <> Queue(conv.io.mem.req_data, mifDataBeats)
+    conv.io.mem.resp <> Queue(io.mem.resp, mifDataBeats)
     io.mem_backup_ctrl <> temp.io.mem_backup_ctrl
     io.host <> temp.io.host
   } else {
