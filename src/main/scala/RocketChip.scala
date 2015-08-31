@@ -213,12 +213,6 @@ class OuterMemorySystem extends Module with TopLevelParameters {
   val backendBuffering = TileLinkDepths(0,0,0,0,0)
 
   val addrMap = params(NASTIAddrHashMap)
-
-  println("Generated Address Map")
-  for ((name, base, size) <- addrMap.sortedEntries) {
-    println(f"\t$name%s $base%x - ${base + size - 1}%x")
-  }
-
   val interconnect = Module(new NASTITopInterconnect)
 
   for ((bank, i) <- managerEndpoints.zipWithIndex) {
