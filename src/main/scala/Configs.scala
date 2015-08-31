@@ -157,22 +157,17 @@ class DefaultConfig extends ChiselConfig (
       case CacheBlockOffsetBits => log2Up(here(CacheBlockBytes))
       case UseBackupMemoryPort => true
       case UseNASTIRTC => false
-      case MMIOBase => 1 << 30 // 1 GB
+      case MMIOBase => BigInt(1 << 30) // 1 GB
+      case ExternalIOStart => 2 * site(MMIOBase)
       case NASTINMasters => site(TLNManagers) +
         (if (site(UseNASTIRTC)) 1 else 0)
       case NASTINSlaves => site(NMemoryChannels) + site(NTiles) + 1
       case NASTIAddrMap => Seq(
-        ("mem", Some(0), MemSize(site(MMIOBase))),
-        ("io", None, Submap(
-          // 15-bit CSR space (2^12 words) * (8 bytes/word)
-          ("csr0", None, MemSize(1 << 15)),
-          ("smallmem", None, MemSize(64)))))
+        ("mem", None, MemSize(site(MMIOBase))),
+        ("conf", None, Submap(
+          ("csr0", None, MemSize(1 << 15)))),
+        ("io", Some(site(ExternalIOStart)), MemSize(2 * site(MMIOBase))))
       case NASTIAddrHashMap => new AddrHashMap(site(NASTIAddrMap))
-      case BuildNASTI => () => Module(new NASTITopInterconnect)
-      case SMIPeripherals => Seq("io:smallmem")
-      case BuildSMI => (name: String) => name match {
-        case "io:smallmem" => Module(new SMIMem(32, 16))
-      }
   }},
   knobValues = {
     case "NTILES" => 1

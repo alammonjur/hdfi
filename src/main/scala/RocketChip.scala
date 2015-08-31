@@ -29,9 +29,8 @@ case object BuildTiles extends Field[Seq[(Bool) => Tile]]
 /** Connect RTC module to NASTI interconnect instead of PCR port
  *  This may be beneficial if you have a large number of cores */
 case object UseNASTIRTC extends Field[Bool]
-
-case object BuildSMI extends Field[String => SMIPeripheral]
-case object SMIPeripherals extends Field[Seq[String]]
+/** Start address of the "io" region in the memory map */
+case object ExternalIOStart extends Field[BigInt]
 
 /** Utility trait for quick access to some relevant parameters */
 trait TopLevelParameters extends UsesParameters {
@@ -66,6 +65,7 @@ class TopIO extends BasicTopIO {
 
 class MultiChannelTopIO extends BasicTopIO with TopLevelParameters {
   val mem = Vec.fill(nMemChannels){ new NASTIMasterIO }
+  val mmio = new NASTIMasterIO
 }
 
 /** Top-level module for the chip */
@@ -83,6 +83,10 @@ class Top extends Module with TopLevelParameters {
     conv.io.mem.resp <> Queue(io.mem.resp, mifDataBeats)
     io.mem_backup_ctrl <> temp.io.mem_backup_ctrl
     io.host <> temp.io.host
+
+    // tie off the mmio port
+    val errslave = Module(new NASTIErrorSlave)
+    errslave.io <> temp.io.mmio
   } else {
     val temp = Module(new ZscaleTop)
     io.host <> temp.io.host
@@ -113,6 +117,7 @@ class MultiChannelTop extends Module with TopLevelParameters {
   uncore.io.tiles_uncached <> tileList.map(_.io.uncached)
   io.host <> uncore.io.host
   io.mem <> uncore.io.mem
+  io.mmio <> uncore.io.mmio
   if(params(UseBackupMemoryPort)) { io.mem_backup_ctrl <> uncore.io.mem_backup_ctrl }
 }
 
@@ -129,6 +134,7 @@ class Uncore extends Module with TopLevelParameters {
     val tiles_uncached = Vec.fill(nTiles){new ClientUncachedTileLinkIO}.flip
     val htif = Vec.fill(nTiles){new HTIFIO}.flip
     val mem_backup_ctrl = new MemBackupCtrlIO
+    val mmio = new NASTIMasterIO
   }
 
   val htif = Module(new HTIF(CSRs.mreset)) // One HTIF module per chip
@@ -154,6 +160,7 @@ class Uncore extends Module with TopLevelParameters {
   // Wire the htif to the memory port(s) and host interface
   io.host.debug_stats_pcr := htif.io.host.debug_stats_pcr
   io.mem <> outmemsys.io.mem
+  io.mmio <> outmemsys.io.mmio
   if(params(UseBackupMemoryPort)) {
     outmemsys.io.mem_backup_en := io.mem_backup_ctrl.en
     VLSIUtils.padOutHTIFWithDividedClock(htif.io, outmemsys.io.mem_backup, io.mem_backup_ctrl, io.host, htifW)
@@ -176,6 +183,7 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     val mem_backup = new MemSerializedIO(htifW)
     val mem_backup_en = Bool(INPUT)
     val pcr = Vec.fill(nTiles) { new SMIIO(64, 12) }
+    val mmio = new NASTIMasterIO
   }
 
   // Create a simple L1toL2 NoC between the tiles+htif and the banks of outer memory
@@ -211,7 +219,7 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     println(f"\t$name%s $base%x - ${base + size - 1}%x")
   }
 
-  val interconnect = params(BuildNASTI)()
+  val interconnect = Module(new NASTITopInterconnect)
 
   for ((bank, i) <- managerEndpoints.zipWithIndex) {
     val conv = Module(new NASTIMasterIOTileLinkIOConverter)(outerTLParams)
@@ -220,9 +228,6 @@ class OuterMemorySystem extends Module with TopLevelParameters {
   }
 
   var masterInd = nManagers
-  val slaveConnected = Array.tabulate(params(NASTINSlaves)) {
-    i => i < nMemChannels
-  }
 
   if (params(UseNASTIRTC)) {
     val rtc = Module(new RTCNASTI(CSRs.mtime))
@@ -230,18 +235,17 @@ class OuterMemorySystem extends Module with TopLevelParameters {
     masterInd += 1
 
     for (i <- 0 until nTiles) {
-      val csrName = s"io:csr$i"
+      val csrName = s"conf:csr$i"
       val csrPort = addrMap(csrName).port
       val conv = Module(new SMIIONASTISlaveIOConverter(64, 12))
       conv.io.nasti <> interconnect.io.slaves(csrPort)
       io.pcr(i) <> conv.io.smi
-      slaveConnected(csrPort) = true
     }
   } else {
     val rtc = Module(new RTC(CSRs.mtime))
 
     for (i <- 0 until nTiles) {
-      val csrName = s"io:csr$i"
+      val csrName = s"conf:csr$i"
       val csrPort = addrMap(csrName).port
       val conv = Module(new SMIIONASTISlaveIOConverter(64, 12))
       val arb = Module(new SMIArbiter(2, 64, 12))
@@ -250,33 +254,10 @@ class OuterMemorySystem extends Module with TopLevelParameters {
       arb.io.in(0) <> conv.io.smi
       arb.io.in(1) <> rtc.io.smi(i)
       io.pcr(i) <> arb.io.out
-      slaveConnected(csrPort) = true
     }
   }
 
-  val smiBuilder = params(BuildSMI)
-
-  for (name <- params(SMIPeripherals)) {
-    val smi = smiBuilder(name)
-    val portNum = addrMap(name).port
-    val conv = Module(new SMIIONASTISlaveIOConverter(
-      smi.dataWidth, smi.addrWidth))
-    conv.io.nasti <> interconnect.io.slaves(portNum)
-    smi.io <> conv.io.smi
-    slaveConnected(portNum) = true
-  }
-
-  val unconnected = interconnect.io.slaves.zip(slaveConnected)
-    .filterNot(_._2).map(_._1)
-
-  // tie off all the unconnected slave ports
-  for (s <- unconnected) {
-    s.ar.ready := Bool(false)
-    s.aw.ready := Bool(false)
-    s.w.ready  := Bool(false)
-    s.b.valid  := Bool(false)
-    s.r.valid  := Bool(false)
-  }
+  io.mmio <> interconnect.io.slaves(addrMap("io").port)
 
   val mem_channels = interconnect.io.slaves.take(nMemChannels)
 
